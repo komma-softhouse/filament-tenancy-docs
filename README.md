@@ -197,6 +197,7 @@ The Tenants resource is where a workspace is run, not just listed.
 
 Every page the plugin adds to a panel carries a **How does it work?** modal in its header, and every visual element is a Filament component, so the plugin inherits the panel's theme instead of bringing its own.
 
+![The central door: one form finds the workspace](assets/how-does-it-works.jpeg)
 ![The central door: one form finds the workspace](assets/central-login.jpeg)
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
