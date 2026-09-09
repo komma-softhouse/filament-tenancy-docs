@@ -14,8 +14,8 @@ You register two plugins and keep credentials in `.env`. Nothing else in the hos
 
 ## Requirements
 
-- PHP 8.3+
-- Laravel 12+
+- PHP 8.4+
+- Laravel 13+
 - Filament 5.x, Livewire 4.x
 - stancl/tenancy 3.8+
 - PostgreSQL, MySQL/MariaDB or SQLite for the central and tenant databases
