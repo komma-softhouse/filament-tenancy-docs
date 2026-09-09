@@ -1,6 +1,10 @@
 # Filament Tenancy Multi Database
 
+<div class="filament-hidden">
+
 ![Filament Tenancy](assets/banner.jpg)
+
+</div>
 
 Database-per-tenant multi-tenancy for **Filament v5**, built on [stancl/tenancy](https://tenancyforlaravel.com/docs/v3/introduction/) and validated in production.
 
