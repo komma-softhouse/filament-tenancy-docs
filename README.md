@@ -1,6 +1,10 @@
 # Filament Tenancy Multi Database
 
+<div class="filament-hidden">
+
 ![Filament Tenancy](assets/banner.jpg)
+
+</div>
 
 Database-per-tenant multi-tenancy for **Filament v5**, built on [stancl/tenancy](https://tenancyforlaravel.com/docs/v3/introduction/) and validated in production.
 
@@ -10,8 +14,8 @@ You register two plugins and keep credentials in `.env`. Nothing else in the hos
 
 ## Requirements
 
-- PHP 8.3+
-- Laravel 12+
+- PHP 8.4+
+- Laravel 13+
 - Filament 5.x, Livewire 4.x
 - stancl/tenancy 3.8+
 - PostgreSQL, MySQL/MariaDB or SQLite for the central and tenant databases
@@ -193,6 +197,7 @@ The Tenants resource is where a workspace is run, not just listed.
 
 Every page the plugin adds to a panel carries a **How does it work?** modal in its header, and every visual element is a Filament component, so the plugin inherits the panel's theme instead of bringing its own.
 
+![The central door: one form finds the workspace](assets/how-does-it-works.jpeg)
 ![The central door: one form finds the workspace](assets/central-login.jpeg)
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
