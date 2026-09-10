@@ -1,10 +1,6 @@
-# Filament Tenancy Multi Database
-
-<div class="filament-hidden">
+# Filament Tenancy
 
 ![Filament Tenancy](assets/banner.jpg)
-
-</div>
 
 Database-per-tenant multi-tenancy for **Filament v5**, built on [stancl/tenancy](https://tenancyforlaravel.com/docs/v3/introduction/) and validated in production.
 
@@ -14,8 +10,8 @@ You register two plugins and keep credentials in `.env`. Nothing else in the hos
 
 ## Requirements
 
-- PHP 8.4+
-- Laravel 13+
+- PHP 8.3+
+- Laravel 12+
 - Filament 5.x, Livewire 4.x
 - stancl/tenancy 3.8+
 - PostgreSQL, MySQL/MariaDB or SQLite for the central and tenant databases
@@ -119,7 +115,7 @@ php artisan tenancy:doctor
 
 Tenancy fails in ways that look like something else: a login that loops because the session cookie is scoped wrong, assets that 404 because they are served from a tenant, a panel that 500s because a config published months ago still names a class that has since changed. None of those errors say "tenancy".
 
-![tenancy:doctor](assets/doctor.jpeg)
+![tenancy:doctor](assets/doctor.jpg)
 
 `tenancy:doctor` asks all of it out loud — both connections and whether the central user can actually create databases, `APP_URL` against the base domain, whether `*.base` resolves, the route and config caches, the `universal` group and the Livewire update route, every panel and its guard (including the provider-order trap), the central tables and columns, spatie, the Redis client, the queue prefix, `asset_helper_tenancy`, and the backup tooling. `--tenants` adds a health check per tenant. It exits non-zero when something fails, so it can gate a deploy.
 
@@ -147,13 +143,13 @@ Point the central connection at an in-memory SQLite database and let tenant data
 
 A workspace is born with its founder. Everybody else arrives through an invitation.
 
-![Members and pending invitations](assets/members.jpeg)
+![Members and pending invitations](assets/members.jpg)
 
 The tenant panel gets a **Members** page: who is in, with the coarse membership role, and the invitations still pending. Owners and admins (configurable) invite by email, change roles, remove people, resend and revoke. The central panel gets the same as a relation manager on the Tenants resource, so support can fix a workspace without asking its owner to log in.
 
 An invitation is a row in central and a link that works once. Only the hash is stored: the clear token lives in the link and nowhere else. Acceptance happens on the central domain, because the person may have no session and no account yet:
 
-![Accepting an invitation](assets/invitation.jpeg)
+![Accepting an invitation](assets/invitation.jpg)
 
 - **No account** — they choose a name and password, the identity is created, the membership and the tenant-local user with it, and they land inside the panel through a signed handoff.
 - **Account already** — they confirm with their existing password, and the same thing happens minus the identity.
@@ -161,6 +157,97 @@ An invitation is a row in central and a link that works once. Only the hash is s
 Nobody gets a session out of a URL: the link identifies the invitation, never the person. Links expire (7 days by default), can be revoked, and are pruned on a schedule.
 
 Removing somebody deletes their membership and their tenant-local user. Their central identity is left alone — that only goes when its last workspace dies. The last owner can be neither removed nor demoted.
+
+## Rows that live on both sides
+
+A person is one identity in central and one local user inside every tenant they belong to. Without syncing, a name changed in one place quietly disagrees with the other two.
+
+The plugin wires stancl's resource syncing for those users: a change made inside a workspace reaches central and every other workspace, and a change made in central reaches all of them. Only what is listed travels — never the password, which lives in central and is checked there, and never the roles, which are the tenant's own business.
+
+For the central-to-tenant direction the host's identity model has to declare the contract:
+
+```php
+use Stancl\Tenancy\Contracts\SyncMaster;
+
+class User extends Authenticatable implements SyncMaster
+{
+    use HasRoles;
+    use IsCentralIdentity;
+}
+```
+
+Without it, the tenant-to-central direction still works and nothing throws; the plugin simply does not start the walk. Anything else you keep on both sides — catalogues, licences, price lists — follows the same contracts: `Syncable` on the tenant model, `SyncMaster` on the central one, and stancl's listener does the carrying.
+
+## Several workspaces, one account
+
+An identity can belong to any number of tenants, and the central door already picks between them — but only before you are inside. Once in a panel, the plugin adds two things.
+
+A **workspace picker** in the topbar, listing the other tenants this identity belongs to. Crossing goes through the same signed single-use handoff as every other door, so the target panel authenticates the arrival on its own terms instead of trusting a session that belongs to a different database. Tenants still being provisioned are left out: their panel has nowhere to land.
+
+A **New workspace** page, reached from that same picker. If the subdomain they pick is taken, the form says so as soon as they leave the field and offers four free alternatives to choose from — every one of them checked before it is shown, because a suggestion that turns out to be taken is worse than no suggestion at all. The public sign-up creates an account *and* a tenant, which is exactly wrong for somebody already signed in — they would end up with two identities for the same face. Here only the workspace is created, owned by the identity already authenticated, and they land inside it. Restrict it with `onboarding.roles` if not everybody should be able to.
+
+## More than one database server
+
+One server holds a lot of tenants until the day it does not, and by then moving them is a migration nobody wants to run.
+
+```php
+TenancyPlugin::make()->databasePool(['tenant-db-1', 'tenant-db-2', 'tenant-db-3'])
+```
+
+Each name is an ordinary Laravel connection. A new tenant is placed on one of them at birth — the only moment the question is cheap — and the choice is written on the tenant itself, so provisioning, runtime connections, migrations, backups and deletion all follow it. Adding capacity is adding a name to the list; nothing already placed is ever moved, because a tenant that changed servers behind everyone's back is a tenant whose backups point at the wrong machine.
+
+Three strategies: `least-tenants` (the default), `round-robin`, and `weighted`, where the weight is relative capacity — a server with `2` takes twice as many as one with `1`.
+
+To keep a particular tenant somewhere — data residency, dedicated hardware — pin it and it is never rebalanced:
+
+```php
+$tenant->setInternal('db_connection', 'residency-eu-1')->save();
+```
+
+In the panel, a widget shows how full each server is and which one takes the next tenant, and **Move to another server** does the move properly: dump, restore on the target, drop the original, with the workspace suspended in between so nothing is written to a database that is about to disappear. The dump is kept either way.
+
+`tenancy:pool` shows the distribution, which server is next, and whether each one answers. `tenancy:doctor` fails on a name that no connection backs, and health reports a tenant placed on a server the application no longer defines — the one failure every other check would report as a driver error.
+
+## Provisioning
+
+By default a tenant is built inside the signup request: database created, migrated, roles seeded, founder provisioned, all before the response. Simple, and fine while migrations are quick.
+
+```php
+TenancyPlugin::make()->asyncProvisioning()
+```
+
+With that, the tenant row is written immediately and the rest happens on a queue. The founder lands on a waiting page — signed and short-lived, on the central domain, because their own subdomain has no database yet — and is handed into their panel the moment it is ready, already signed in.
+
+That brings one new fact the whole application has to respect: **a tenant can exist before its database does**. So:
+
+- `EnsureTenantIsReady` sits at the front of every tenant panel and answers with a page that refreshes itself, instead of a driver error.
+- Health reports an unfinished tenant as *provisioning*, not as broken — nobody should be sent to repair what a worker is about to build.
+- A failure is recorded on the tenant with its reason, and the job lands in `failed_jobs` with the stack trace.
+- *Finish setup* / *Retry setup* appears on the row while there is something to finish, and `tenancy:provision --failed` does the same for all of them at once.
+
+Both modes run the same list of steps, so a tenant built on a queue is indistinguishable from one built in the request. It needs a queue worker; without one, tenants stay pending forever.
+
+## Subdomains or paths
+
+By default a tenant is identified by the host it is reached at: `acme.demo.test`. That is what makes the session isolation here work by construction — each tenant is its own origin — and what custom domains are built on.
+
+```php
+TenancyPlugin::make()->identification('path')
+```
+
+With that, every tenant lives under the central host instead: `demo.test/acme/app`. No wildcard DNS, no wildcard certificate, which is why it is often the right choice for an internal tool or a staging box. What it costs:
+
+- **One cookie jar.** Central and tenant panels share a host, so their session cookies must have different names — they do by default, and `tenancy:doctor` fails if they ever match.
+- **Requests with no tenant in the URL.** Livewire posts to `/livewire/update`, one fixed path for every panel. With subdomains the host still says who this is; with paths it says nothing, so the tenant is remembered in the session while the panel is served and read back from there, falling back to the referer. Two tabs on two tenants in the same browser is the case this cannot serve honestly.
+- **No custom domains.** They contradict the mode: the whole point there is to be reached somewhere else.
+
+Everything that hands somebody over to a tenant — the login, the handoff, the switcher, the commands — asks how tenants are reached rather than assuming.
+
+## Running under Octane
+
+Octane keeps the application alive between requests, which is a problem for exactly the things this plugin changes per request: the default database connection, the session cookie, the tenant itself. A tenant left initialized is one workspace answering with another's rows.
+
+The plugin listens to Octane's request events and puts all three back. It registers itself only when Octane is installed, and `tenancy:doctor` fails if Octane is there and the reset has been turned off.
 
 ## Custom domains
 
@@ -171,7 +258,7 @@ A custom domain is a **claim until DNS proves it**. Anybody can type a hostname 
 - **TXT** — `_tenancy-verify.example.com` must answer `tenancy-verify={token}`. Proves ownership without touching where the domain points, so it can be created before the cutover.
 - **CNAME** — the hostname must point here. Proves ownership and routing at once, but cannot be used on a zone apex like `example.com`.
 
-![Domains, with the DNS record still missing](assets/domains.jpeg)
+![Domains, with the DNS record still missing](assets/domains.jpg)
 
 Manage them from the **Domains** relation manager on the Tenants resource: add, see the pending record, *Verify now*, make one the primary (every URL the platform builds then uses it), remove. `tenancy:domains:verify` re-checks the pending ones and is scheduled hourly, because DNS spreads on its own schedule.
 
@@ -181,13 +268,13 @@ What the plugin does **not** do: route the traffic or issue the certificate. The
 
 The Tenants resource is where a workspace is run, not just listed.
 
-![The Tenants list, with its stats and health widgets](assets/tenants.jpeg)
+![The Tenants list, with its stats and health widgets](assets/tenants.jpg)
 
 - **Health.** Six checks per tenant — database, schema (pending migrations), domain, owner, tenant users, roles — behind a short cache. A `Health` column, an infolist section listing exactly what is missing, a widget counting the tenants that need attention, and a filter to see only those.
 - **Repairs.** Each failing check gets its own action under *Maintenance*: create the missing database (and migrate it), run pending migrations, re-seed the roles, assign an owner, provision the tenant users that are missing. Never one button that silently does six things.
 - **Leftovers.** Databases *and* storage directories with the tenant naming pattern that no tenant row claims — what a half-finished creation or a hand-deleted row leaves behind. Listed on demand from the server itself, dropped one by one and only when you ask.
 - **Storage.** stancl gives each tenant a directory of its own and never removes it; the plugin deletes it along with the tenant, reports its size in the list and the infolist, and lists the orphans.
-![Maintenance: one action per failing check](assets/maintenance.jpeg)
+![Maintenance: one action per failing check](assets/maintenance.jpg)
 
 - **Suspension.** Block a tenant with the reason you write and, optionally, a date it comes back on its own. `EnsureTenantIsActive` turns every request away with that message; support keeps access while impersonating.
 - **Notices.** Publish a banner into a tenant's panel (info, warning or urgent, with an optional expiry), and optionally email the same text to its members.
@@ -197,8 +284,7 @@ The Tenants resource is where a workspace is run, not just listed.
 
 Every page the plugin adds to a panel carries a **How does it work?** modal in its header, and every visual element is a Filament component, so the plugin inherits the panel's theme instead of bringing its own.
 
-![The central door: one form finds the workspace](assets/how-does-it-works.jpeg)
-![The central door: one form finds the workspace](assets/central-login.jpeg)
+![The central door: one form finds the workspace](assets/central-login.jpg)
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
 
@@ -211,15 +297,17 @@ Every option lives in `config/filament-tenancy.php` and every one of them has a 
 | Method | Config key | Default | What it does |
 |---|---|---|---|
 | `baseDomain(string)` | `domain.base` | `APP_DOMAIN`, else the host of `APP_URL` | Root under which tenants live as `{slug}.base` |
+| `identification(string $driver, ?string $pathParameter)` | `identification.driver`, `identification.path_parameter` | `domain`, `tenant` | Whether a tenant is identified by host or by the first path segment |
+| `octaneReset(bool)` | `octane.reset` | `true` | Put the application back between Octane requests |
 | `centralDomains(array)` | `domain.central_domains` | `127.0.0.1`, `localhost`, the base domain, `TENANCY_CENTRAL_DOMAINS` (comma list) | Hosts served without tenancy |
 | `centralConnection(string, bool $register = true)` | `database.central_connection`, `database.register_connections` | `central`, `true` | Name of the central connection; `false` to reuse one the host defines |
 | `tenantConnectionTemplate(string)` | `database.template_connection` | `tenant_template` | Connection stancl copies for each tenant database |
 | `databaseDriver(string)` | `database.driver` | `DB_CENTRAL_DRIVER`, else `DB_CONNECTION`, else `pgsql` | `pgsql`, `mysql`, `mariadb`, `sqlite` |
 | `setDefaultConnection(bool)` | `database.set_default_connection` | `true` | Switch `database.default` to the central connection |
 | `databaseNaming(string $prefix, string $suffix)` | `database.prefix`, `database.suffix` | `tenant`, `''` | Tenant database name = prefix + id + suffix |
+| `databasePool(array $connections, string $strategy, array $weights)` | `pool.connections`, `pool.strategy`, `pool.weights` | `[]`, `least-tenants`, `[]` | Spread tenants across several database servers |
 | `databaseManagers(array)` | `database.managers` | stancl's sqlite/mysql/mariadb/pgsql managers | driver ⇒ `TenantDatabaseManager` |
 | `tenantModel(string)` | `models.tenant` | `Komma\Tenancy\Models\Tenant` | Extend it in the host |
-| `domainModel(string)` | `models.domain` | `Komma\Tenancy\Models\Domain` | Extend it in the host; the plugin's own carries the verification and primary columns |
 | `centralUserModel(string)` | `models.central_user` | `App\Models\User` | The host's identity model (uses `IsCentralIdentity`) |
 | `tenantUserModel(string)` | `models.tenant_user` | `Komma\Tenancy\Models\TenantUser` | The user model inside tenant databases |
 | `tenantColumns(array)` | `models.tenant_columns` | `[]` | Extra real columns on `tenants` |
@@ -252,6 +340,7 @@ Every option lives in `config/filament-tenancy.php` and every one of them has a 
 | `handoff(int $ttl, int $pruneAfterDays, bool $schedulePrune)` | `handoff.*` | `60`, `7`, `true` | |
 | `impersonation(bool, ?array $roles, ?array $protectedRoles)` | `impersonation.*` | `true`, `super-admin, support`, `super-admin` | Who may impersonate; identities that never can be |
 | — | `impersonation.leave_path`, `impersonation.leave_name`, `impersonation.banner` | `impersonation/leave`, `impersonation.leave`, `true` | |
+| `resourceSyncing(bool, ?array $userAttributes)` | `syncing.enabled`, `syncing.user_attributes` | `true`, `name, email` | Keep the same person's row in step on both sides |
 | `invitations(bool, ?int $ttlDays, ?array $roles, ?bool $email)` | `invitations.enabled`, `invitations.ttl_days`, `invitations.roles`, `invitations.email` | `true`, `7`, `owner, admin`, `true` | How somebody who is not the founder joins a workspace |
 | `invitationRole(string)` | `invitations.default_role` | `member` | Role an invitation carries by default |
 | `invitationPage(?string $view, ?string $controller, ?string $path)` | `invitations.view`, `invitations.controller`, `invitations.path` | the plugin's own, `invitations/{token}` | The acceptance page |
@@ -260,8 +349,9 @@ Every option lives in `config/filament-tenancy.php` and every one of them has a 
 | `storage(bool $deleteOnDestroy, ?bool $orphans, ?string $root)` | `storage.delete_on_destroy`, `storage.orphans`, `storage.root` | `true`, `true`, `null` | The per-tenant storage directory |
 | `backups(bool, ?string $path, ?bool $withStorage, ?bool $beforeDestroy, ?bool $zip)` | `backups.*` | `true`, `storage/app/tenant-backups`, `true`, `true`, `true` | Database dump, files and manifest |
 | `backupBinaries(array)` | `backups.binaries` | all `null` (found on the PATH) | Absolute paths to `pg_dump`, `psql`, `mysqldump`, `mysql` |
+| `asyncProvisioning(bool, ?string $queue, ?int $pollSeconds)` | `provisioning.async`, `provisioning.queue`, `provisioning.poll_seconds` | `false`, default queue, `3` | Build tenant databases on a queue instead of in the signup request |
 | `healthChecks(bool, ?int $cacheTtl, ?bool $orphanDatabases)` | `health.enabled`, `health.cache_ttl`, `health.orphan_databases` | `true`, `300`, `true` | Completeness checks, the repairs they enable, and the orphan-database list |
-| `widgets(bool $stats, ?bool $health)` | `widgets.stats`, `widgets.health` | `true`, `true` | Widgets on the Tenants list page |
+| `widgets(bool $stats, ?bool $health, ?bool $pool)` | `widgets.stats`, `widgets.health`, `widgets.pool` | `true`, `true`, `true` | Widgets on the Tenants list page (the pool one appears only with a pool) |
 | `suspension(bool)` | `suspension.enabled` | `true` | Block a tenant's panels with the operator's message |
 | `notices(bool, bool $email)` | `notices.enabled`, `notices.email` | `true`, `false` | Publish a banner into a tenant's panel; optionally email its members |
 | `centralRoutes(bool)` | `routes.central` | `true` | `/register`, `/login`, `/impersonation/leave` |
@@ -290,6 +380,8 @@ Every option lives in `config/filament-tenancy.php` and every one of them has a 
 | `passwordReset(bool)` | `profile.password_reset` | `true` | |
 | `passwordReminder(bool)` | `profile.password_reminder` | `true` | Banner for invited members without a password |
 | `impersonationBanner(bool)` | `impersonation.banner` | `true` | |
+| `switcher(bool)` | `switcher.enabled` | `true` | The workspace picker in the topbar |
+| `onboarding(bool, ?string $page)` | `onboarding.enabled` | `true`, `Komma\Tenancy\Filament\Pages\NewWorkspace` | Creating another workspace without leaving this one |
 | `members(bool, ?string $page)` | `invitations.enabled` | `true`, `Komma\Tenancy\Filament\Pages\Members` | The workspace's own people page |
 | `suspension(bool)` | `suspension.enabled` | `true` | Apply `EnsureTenantIsActive` on this panel |
 | `notices(bool)` | `notices.enabled` | `true` | Show the operator's banner on this panel |
@@ -298,133 +390,6 @@ Every option lives in `config/filament-tenancy.php` and every one of them has a 
 | `sessionCookie(string, bool $wildcardDomain)` | `session.*` | `tenant_session`, `true` | Same as `session()` on `TenancyPlugin` |
 
 A tenant panel gets: `authGuard(tenant)`, the plugin's `Login`, `EditProfile`, password reset, the middleware stack (`SetSubdomainUrlDefault`, cookies, session, errors, CSRF, bindings, Filament, `InitializeTenancyByDomain`, your extras, `PreventAccessFromCentralDomains`), `Authenticate` as auth middleware, and the two banners.
-
-### Every option at a glance
-
-Nothing below is required: each line is the default, written out so the whole
-surface is visible in one place. Delete what you do not need.
-
-```php
-// Central panel
-->plugin(
-    TenancyPlugin::make()
-        // ── Domain ─────────────────────────────────────────────────────
-        ->baseDomain(env('APP_DOMAIN', 'demo.test'))
-        ->centralDomains(['demo.test', '127.0.0.1', 'localhost'])
-        // ── Database ───────────────────────────────────────────────────
-        ->centralConnection('central', register: true)
-        ->tenantConnectionTemplate('tenant_template')
-        ->databaseDriver('pgsql')                       // pgsql | mysql | mariadb | sqlite
-        ->setDefaultConnection(true)
-        ->databaseNaming(prefix: 'tenant', suffix: '')
-        ->databaseManagers([
-            'sqlite' => SQLiteDatabaseManager::class,
-            'mysql' => MySQLDatabaseManager::class,
-            'mariadb' => MySQLDatabaseManager::class,
-            'pgsql' => PostgreSQLDatabaseManager::class,
-        ])
-        // ── Models ─────────────────────────────────────────────────────
-        ->tenantModel(Tenant::class)
-        ->domainModel(Domain::class)
-        ->centralUserModel(User::class)
-        ->tenantUserModel(TenantUser::class)
-        ->tenantColumns([])                             // additional physical columns in `tenants`
-        // ── Auth ───────────────────────────────────────────────────────
-        ->centralGuard('web')
-        ->tenantGuard('tenant', provider: 'tenant_users', register: true)
-        // ── Panels ─────────────────────────────────────────────────────
-        ->centralPanel('admin')                         // set automatically when the plugin is registered
-        ->tenantPanels(['business' => 'app'], defaultKind: 'business')
-        // ── Roles ──────────────────────────────────────────────────────
-        ->staffRoles(['super-admin', 'support', 'finance', 'staff'])
-        ->manageRoles(['super-admin'])
-        ->tenantRoles(['owner', 'admin', 'member'], owner: 'owner')
-        ->seedTenantRoles(true)
-        ->spatiePermissionScoping(true)
-        // ── Session ────────────────────────────────────────────────────
-        ->session(tenantCookie: 'tenant_session', wildcardDomain: true)
-        // ── Central login gateway /login ───────────────────────────────
-        ->centralLogin(true, path: 'login', name: 'login', throttle: '10,1')
-        ->centralLoginView('filament-tenancy::auth.login')
-        ->centralLoginController(EntryController::class)
-        ->authLayout('filament-tenancy::components.layouts.auth')
-        // ── Public registration /register ──────────────────────────────
-        ->registration(true, path: 'register', name: 'register', component: RegisterTenant::class)
-        ->registrationKinds(['business'])
-        ->captcha(rule: null, view: null)               // e.g. Turnstile::class, 'components.turnstile'
-        ->honeypot(true)
-        ->registrationRateLimit(attempts: 3, decaySeconds: 60)
-        ->passwordMinLength(8)
-        ->reservedSubdomains(['billing', 'support'], merge: true)
-        ->registrationRedirect(fn ($tenant) => null)
-        ->onTenantRegistered(fn ($tenant, $owner) => null)
-        ->afterLoginRedirect(fn ($tenant, $globalUser, ?string $intent) => null)
-        // ── Invitations ────────────────────────────────────────────────
-        ->invitations(true, ttlDays: 7, roles: ['owner', 'admin'], email: true)
-        ->invitationRole('member')
-        ->invitationPage(view: null, controller: null, path: 'invitations/{token}')
-        // ── Custom domains ─────────────────────────────────────────────
-        ->customDomains(true, verification: 'txt', cnameTarget: null, scheduleVerify: true)
-        ->domainVerificationRecord('_tenancy-verify', 'tenancy-verify=')
-        // ── Handoff and impersonation ──────────────────────────────────
-        ->handoff(ttlSeconds: 60, pruneAfterDays: 7, schedulePrune: true)
-        ->impersonation(true, roles: ['super-admin', 'support'], protectedRoles: ['super-admin'])
-        // ── Operations ─────────────────────────────────────────────────
-        ->healthChecks(true, cacheTtl: 300, orphanDatabases: true)
-        ->widgets(stats: true, health: true)
-        ->suspension(true)
-        ->notices(true, email: false)
-        // ── Storage and backups ────────────────────────────────────────
-        ->storage(deleteOnDestroy: true, orphans: true, root: null)
-        ->backups(true, path: null, withStorage: true, beforeDestroy: true, zip: true)
-        ->backupBinaries(['pg_dump' => null, 'psql' => null, 'mysqldump' => null, 'mysql' => null])
-        // ── Routes ─────────────────────────────────────────────────────
-        ->centralRoutes(true)
-        ->tenantRoutes(true, loadHostFile: true)
-        // ── Pipeline, migrations, seeders ──────────────────────────────
-        ->afterTenantCreated([], queued: false)         // jobs that receive the tenant
-        ->tenantMigrationPaths([database_path('migrations/tenant')], merge: true)
-        ->tenantSeeders('DatabaseSeeder')
-        // ── stancl bootstrappers ───────────────────────────────────────
-        ->bootstrappers([
-            DatabaseTenancyBootstrapper::class,
-            CacheTenancyBootstrapper::class,
-            FilesystemTenancyBootstrapper::class,
-            QueueTenancyBootstrapper::class,
-            RedisTenancyBootstrapper::class,
-        ])
-        ->cacheTag('tenant')
-        ->filesystemDisks(['local', 'public'], rootOverride: [
-            'local' => '%storage_path%/app/',
-            'public' => '%storage_path%/app/public/',
-        ], suffixStoragePath: true)
-        ->redis(null, prefixedConnections: ['cache'])   // true requires a client · null auto-detects
-        // ── Central panel interface ────────────────────────────────────
-        ->tenantResource(true)
-        ->tenantResourceRelationManagers([])
-        // ── Escape hatch ───────────────────────────────────────────────
-        ->configure('registration.email_rule', 'email:rfc')
-);
-```
-
-```php
-// Tenant panel
-->plugin(
-    TenantPanelPlugin::make()
-        ->kind('business')
-        ->login(Login::class)
-        ->profile(true, page: EditProfile::class)
-        ->passwordReset(true)
-        ->passwordReminder(true)
-        ->members(true, page: Members::class)
-        ->impersonationBanner(true)
-        ->suspension(true)
-        ->notices(true)
-        ->middleware([])                                // after InitializeTenancyByDomain
-        ->afterLoginRedirect(fn ($tenant, $globalUser, ?string $intent) => null)
-        ->sessionCookie('tenant_session', wildcardDomain: true)
-);
-```
 
 ### Several tenant panels
 
@@ -473,6 +438,8 @@ Extend the plugin's classes rather than starting from scratch: `Login` carries t
 | `tenancy:backup {tenant?} --path= --no-zip --without-storage` | Back up one tenant or every tenant |
 | `tenancy:restore {backup} --id= --force` | Rebuild a tenant from a backup |
 | `tenancy:domains:verify --tenant=` | Re-check the DNS of every custom domain still pending |
+| `tenancy:provision {tenant?} --failed --sync` | Provision or re-provision tenants whose database was never finished |
+| `tenancy:pool` | Show the spread across database servers and where the next tenant lands |
 | `tenancy:doctor --tenants` | Diagnose the whole setup: connections, DNS, routes, caches, panels, tooling |
 | `tenants:migrate`, `tenants:seed`, `tenants:run` | stancl's own, already configured with the plugin's paths |
 
@@ -497,6 +464,8 @@ Extend the plugin's classes rather than starting from scratch: `Login` carries t
 | `Komma\Tenancy\Services\Domains` | Add, verify, promote and remove the domains of a tenant |
 | `Komma\Tenancy\Services\TenantStorage` | Where a tenant's files are, how big they are, and which directories are orphaned |
 | `Komma\Tenancy\Services\TenantBackup` | Create, inspect and restore a backup |
+| `Komma\Tenancy\Services\DatabasePool` | Where a new tenant is placed, and what sits where |
+| `Komma\Tenancy\Services\TenantRelocator` | Move a tenant to another server: dump, restore, drop |
 | `Komma\Tenancy\Services\DatabaseInventory` | What is physically on the server, and which of it is orphaned |
 | `Komma\Tenancy\Tenancy` | Runtime configuration (`app(Tenancy::class)`) |
 
