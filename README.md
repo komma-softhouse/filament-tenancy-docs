@@ -396,6 +396,142 @@ Every option lives in `config/filament-tenancy.php` and every one of them has a 
 
 A tenant panel gets: `authGuard(tenant)`, the plugin's `Login`, `EditProfile`, password reset, the middleware stack (`SetSubdomainUrlDefault`, cookies, session, errors, CSRF, bindings, Filament, `InitializeTenancyByDomain`, your extras, `PreventAccessFromCentralDomains`), `Authenticate` as auth middleware, and the two banners.
 
+### Every option at a glance
+
+Nothing below is required: each line is the default, written out so the whole
+surface is visible in one place. Delete what you do not need.
+
+```php
+// Central panel
+->plugin(
+    TenancyPlugin::make()
+        // ── Domain ─────────────────────────────────────────────────────
+        ->baseDomain(env('APP_DOMAIN', 'demo.test'))
+        ->centralDomains(['demo.test', '127.0.0.1', 'localhost'])
+        ->identification('domain')                      // domain | path
+        // ── Database ───────────────────────────────────────────────────
+        ->centralConnection('central', register: true)
+        ->tenantConnectionTemplate('tenant_template')
+        ->databaseDriver('pgsql')                       // pgsql | mysql | mariadb | sqlite
+        ->setDefaultConnection(true)
+        ->databaseNaming(prefix: 'tenant', suffix: '')
+        ->databaseManagers([
+            'sqlite' => SQLiteDatabaseManager::class,
+            'mysql' => MySQLDatabaseManager::class,
+            'mariadb' => MySQLDatabaseManager::class,
+            'pgsql' => PostgreSQLDatabaseManager::class,
+        ])
+        ->databasePool([], strategy: 'least-tenants')   // several servers; empty means one
+        // ── Models ─────────────────────────────────────────────────────
+        ->tenantModel(Tenant::class)
+        ->domainModel(Domain::class)
+        ->centralUserModel(User::class)
+        ->tenantUserModel(TenantUser::class)
+        ->tenantColumns([])                             // additional physical columns in `tenants`
+        // ── Auth ───────────────────────────────────────────────────────
+        ->centralGuard('web')
+        ->tenantGuard('tenant', provider: 'tenant_users', register: true)
+        // ── Panels ─────────────────────────────────────────────────────
+        ->centralPanel('admin')                         // set automatically when the plugin is registered
+        ->tenantPanels(['business' => 'app'], defaultKind: 'business')
+        // ── Roles ──────────────────────────────────────────────────────
+        ->staffRoles(['super-admin', 'support', 'finance', 'staff'])
+        ->manageRoles(['super-admin'])
+        ->tenantRoles(['owner', 'admin', 'member'], owner: 'owner')
+        ->seedTenantRoles(true)
+        ->spatiePermissionScoping(true)
+        // ── Session ────────────────────────────────────────────────────
+        ->session(tenantCookie: 'tenant_session', wildcardDomain: true)
+        // ── Central login gateway /login ───────────────────────────────
+        ->centralLogin(true, path: 'login', name: 'login', throttle: '10,1')
+        ->centralLoginView('filament-tenancy::auth.login')
+        ->centralLoginController(EntryController::class)
+        ->authLayout('filament-tenancy::components.layouts.auth')
+        // ── Public registration /register ──────────────────────────────
+        ->registration(true, path: 'register', name: 'register', component: RegisterTenant::class)
+        ->registrationKinds(['business'])
+        ->captcha(rule: null, view: null)               // e.g. Turnstile::class, 'components.turnstile'
+        ->honeypot(true)
+        ->registrationRateLimit(attempts: 3, decaySeconds: 60)
+        ->passwordMinLength(8)
+        ->reservedSubdomains(['billing', 'support'], merge: true)
+        ->registrationRedirect(fn ($tenant) => null)
+        ->onTenantRegistered(fn ($tenant, $owner) => null)
+        ->afterLoginRedirect(fn ($tenant, $globalUser, ?string $intent) => null)
+        // ── Invitations ────────────────────────────────────────────────
+        ->invitations(true, ttlDays: 7, roles: ['owner', 'admin'], email: true)
+        ->invitationRole('member')
+        ->invitationPage(view: null, controller: null, path: 'invitations/{token}')
+        // ── Syncing ────────────────────────────────────────────────────
+        ->resourceSyncing(true, userAttributes: ['name', 'email'])
+        // ── Custom domains ─────────────────────────────────────────────
+        ->customDomains(true, verification: 'txt', cnameTarget: null, scheduleVerify: true)
+        ->domainVerificationRecord('_tenancy-verify', 'tenancy-verify=')
+        // ── Handoff and impersonation ──────────────────────────────────
+        ->handoff(ttlSeconds: 60, pruneAfterDays: 7, schedulePrune: true)
+        ->impersonation(true, roles: ['super-admin', 'support'], protectedRoles: ['super-admin'])
+        // ── Provisioning ───────────────────────────────────────────────
+        ->asyncProvisioning(false, queue: null, pollSeconds: 3)
+        // ── Operations ─────────────────────────────────────────────────
+        ->healthChecks(true, cacheTtl: 300, orphanDatabases: true)
+        ->widgets(stats: true, health: true, pool: true)
+        ->suspension(true)
+        ->notices(true, email: false)
+        // ── Storage and backups ────────────────────────────────────────
+        ->storage(deleteOnDestroy: true, orphans: true, root: null)
+        ->backups(true, path: null, withStorage: true, beforeDestroy: true, zip: true)
+        ->backupBinaries(['pg_dump' => null, 'psql' => null, 'mysqldump' => null, 'mysql' => null])
+        // ── Routes ─────────────────────────────────────────────────────
+        ->centralRoutes(true)
+        ->tenantRoutes(true, loadHostFile: true)
+        // ── Pipeline, migrations, seeders ──────────────────────────────
+        ->afterTenantCreated([], queued: false)         // jobs that receive the tenant
+        ->tenantMigrationPaths([database_path('migrations/tenant')], merge: true)
+        ->tenantSeeders('DatabaseSeeder')
+        // ── stancl bootstrappers ───────────────────────────────────────
+        ->bootstrappers([
+            DatabaseTenancyBootstrapper::class,
+            CacheTenancyBootstrapper::class,
+            FilesystemTenancyBootstrapper::class,
+            QueueTenancyBootstrapper::class,
+            RedisTenancyBootstrapper::class,
+        ])
+        ->cacheTag('tenant')
+        ->filesystemDisks(['local', 'public'], rootOverride: [
+            'local' => '%storage_path%/app/',
+            'public' => '%storage_path%/app/public/',
+        ], suffixStoragePath: true)
+        ->redis(null, prefixedConnections: ['cache'])   // true requires a client · null auto-detects
+        ->octaneReset(true)
+        // ── Central panel interface ────────────────────────────────────
+        ->tenantResource(true)
+        ->tenantResourceRelationManagers([])
+        // ── Escape hatch ───────────────────────────────────────────────
+        ->configure('registration.email_rule', 'email:rfc')
+);
+```
+
+```php
+// Tenant panel
+->plugin(
+    TenantPanelPlugin::make()
+        ->kind('business')
+        ->login(Login::class)
+        ->profile(true, page: EditProfile::class)
+        ->passwordReset(true)
+        ->passwordReminder(true)
+        ->members(true, page: Members::class)
+        ->switcher(true)
+        ->onboarding(true, page: NewWorkspace::class)
+        ->impersonationBanner(true)
+        ->suspension(true)
+        ->notices(true)
+        ->middleware([])                                // after tenancy is initialized
+        ->afterLoginRedirect(fn ($tenant, $globalUser, ?string $intent) => null)
+        ->sessionCookie('tenant_session', wildcardDomain: true)
+);
+```
+
 ### Several tenant panels
 
 ```php
