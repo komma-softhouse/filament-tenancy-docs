@@ -1,6 +1,10 @@
-# Filament Tenancy
+# Filament Tenancy Multi Database
+
+<div class="filament-hidden">
 
 ![Filament Tenancy](assets/banner.jpg)
+
+</div>
 
 Database-per-tenant multi-tenancy for **Filament v5**, built on [stancl/tenancy](https://tenancyforlaravel.com/docs/v3/introduction/) and validated in production.
 
@@ -10,8 +14,8 @@ You register two plugins and keep credentials in `.env`. Nothing else in the hos
 
 ## Requirements
 
-- PHP 8.3+
-- Laravel 12+
+- PHP 8.4+
+- Laravel 13+
 - Filament 5.x, Livewire 4.x
 - stancl/tenancy 3.8+
 - PostgreSQL, MySQL/MariaDB or SQLite for the central and tenant databases
@@ -115,7 +119,7 @@ php artisan tenancy:doctor
 
 Tenancy fails in ways that look like something else: a login that loops because the session cookie is scoped wrong, assets that 404 because they are served from a tenant, a panel that 500s because a config published months ago still names a class that has since changed. None of those errors say "tenancy".
 
-![tenancy:doctor](assets/doctor.jpg)
+![tenancy:doctor](assets/doctor.jpeg)
 
 `tenancy:doctor` asks all of it out loud — both connections and whether the central user can actually create databases, `APP_URL` against the base domain, whether `*.base` resolves, the route and config caches, the `universal` group and the Livewire update route, every panel and its guard (including the provider-order trap), the central tables and columns, spatie, the Redis client, the queue prefix, `asset_helper_tenancy`, and the backup tooling. `--tenants` adds a health check per tenant. It exits non-zero when something fails, so it can gate a deploy.
 
@@ -143,13 +147,13 @@ Point the central connection at an in-memory SQLite database and let tenant data
 
 A workspace is born with its founder. Everybody else arrives through an invitation.
 
-![Members and pending invitations](assets/members.jpg)
+![Members and pending invitations](assets/members.jpeg)
 
 The tenant panel gets a **Members** page: who is in, with the coarse membership role, and the invitations still pending. Owners and admins (configurable) invite by email, change roles, remove people, resend and revoke. The central panel gets the same as a relation manager on the Tenants resource, so support can fix a workspace without asking its owner to log in.
 
 An invitation is a row in central and a link that works once. Only the hash is stored: the clear token lives in the link and nowhere else. Acceptance happens on the central domain, because the person may have no session and no account yet:
 
-![Accepting an invitation](assets/invitation.jpg)
+![Accepting an invitation](assets/invitation.jpeg)
 
 - **No account** — they choose a name and password, the identity is created, the membership and the tenant-local user with it, and they land inside the panel through a signed handoff.
 - **Account already** — they confirm with their existing password, and the same thing happens minus the identity.
@@ -258,7 +262,7 @@ A custom domain is a **claim until DNS proves it**. Anybody can type a hostname 
 - **TXT** — `_tenancy-verify.example.com` must answer `tenancy-verify={token}`. Proves ownership without touching where the domain points, so it can be created before the cutover.
 - **CNAME** — the hostname must point here. Proves ownership and routing at once, but cannot be used on a zone apex like `example.com`.
 
-![Domains, with the DNS record still missing](assets/domains.jpg)
+![Domains, with the DNS record still missing](assets/domains.jpeg)
 
 Manage them from the **Domains** relation manager on the Tenants resource: add, see the pending record, *Verify now*, make one the primary (every URL the platform builds then uses it), remove. `tenancy:domains:verify` re-checks the pending ones and is scheduled hourly, because DNS spreads on its own schedule.
 
@@ -268,13 +272,13 @@ What the plugin does **not** do: route the traffic or issue the certificate. The
 
 The Tenants resource is where a workspace is run, not just listed.
 
-![The Tenants list, with its stats and health widgets](assets/tenants.jpg)
+![The Tenants list, with its stats and health widgets](assets/tenants.jpeg)
 
 - **Health.** Six checks per tenant — database, schema (pending migrations), domain, owner, tenant users, roles — behind a short cache. A `Health` column, an infolist section listing exactly what is missing, a widget counting the tenants that need attention, and a filter to see only those.
 - **Repairs.** Each failing check gets its own action under *Maintenance*: create the missing database (and migrate it), run pending migrations, re-seed the roles, assign an owner, provision the tenant users that are missing. Never one button that silently does six things.
 - **Leftovers.** Databases *and* storage directories with the tenant naming pattern that no tenant row claims — what a half-finished creation or a hand-deleted row leaves behind. Listed on demand from the server itself, dropped one by one and only when you ask.
 - **Storage.** stancl gives each tenant a directory of its own and never removes it; the plugin deletes it along with the tenant, reports its size in the list and the infolist, and lists the orphans.
-![Maintenance: one action per failing check](assets/maintenance.jpg)
+![Maintenance: one action per failing check](assets/maintenance.jpeg)
 
 - **Suspension.** Block a tenant with the reason you write and, optionally, a date it comes back on its own. `EnsureTenantIsActive` turns every request away with that message; support keeps access while impersonating.
 - **Notices.** Publish a banner into a tenant's panel (info, warning or urgent, with an optional expiry), and optionally email the same text to its members.
@@ -284,7 +288,8 @@ The Tenants resource is where a workspace is run, not just listed.
 
 Every page the plugin adds to a panel carries a **How does it work?** modal in its header, and every visual element is a Filament component, so the plugin inherits the panel's theme instead of bringing its own.
 
-![The central door: one form finds the workspace](assets/central-login.jpg)
+![The central door: one form finds the workspace](assets/how-does-it-works.jpeg)
+![The central door: one form finds the workspace](assets/central-login.jpeg)
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
 
